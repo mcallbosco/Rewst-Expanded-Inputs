@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rewst Multiline editor.
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      2.3
 // @description  Adds a multiline editor for long fields and a viewer for table cells that span multiple lines.
 // @author       Mcall
 // @match        https://app.rewst.io/*
@@ -15,6 +15,7 @@
     // --- Configuration ---
     const TARGET_LABEL_TEXT = "Default Value";
     const TARGET_ARIA_LABEL_TEXT = "Value";
+    const TAB_SPACES = 4; // Number of spaces to insert for a tab
 
     let activeInputElement = null;
     let isEditingJson = false;
@@ -95,8 +96,8 @@
             }
             .mle-edit-button:hover { background-color: #555; border-color: #777; }
             .mle-view-button {
-                 background-color: #3a3a3a; color: #d0d0d0;
-                 border: 1px solid #555;
+                background-color: #3a3a3a; color: #d0d0d0;
+                border: 1px solid #555;
             }
             .mle-view-button:hover { background-color: #4a4a4a; border-color: #666; }
         `;
@@ -128,6 +129,31 @@
         const cancelButton = document.getElementById('mle-cancel-button');
         const textarea = document.getElementById('mle-textarea');
 
+        // --- UPDATED: Handle special key presses in the textarea ---
+        textarea.addEventListener('keydown', function(e) {
+            // Handle Ctrl+A (or Cmd+A on Mac) for selecting all text
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+                e.stopPropagation(); // Stop the event from bubbling up to other handlers that might interfere.
+                // We do NOT prevent the default action, as we want the browser's "select all" to happen.
+                return; // Exit so no other logic here fires
+            }
+
+            // Handle Tab key for indentation
+            if (e.key === 'Tab') {
+                e.preventDefault(); // Prevent default tab behavior (focus change)
+
+                const start = this.selectionStart;
+                const end = this.selectionEnd;
+                const spaces = ' '.repeat(TAB_SPACES);
+
+                // Insert spaces at the current cursor position
+                this.value = this.value.substring(0, start) + spaces + this.value.substring(end);
+
+                // Move cursor to after the inserted spaces
+                this.selectionStart = this.selectionEnd = start + spaces.length;
+            }
+        });
+
         cancelButton.addEventListener('click', hideModal);
         modalOverlay.addEventListener('click', (e) => e.target === modalOverlay && hideModal());
 
@@ -135,21 +161,24 @@
             if (activeInputElement) {
                 let finalValue = textarea.value;
                 if (isEditingJson) {
-                    const rawText = textarea.value;
-                    const firstBrace = rawText.indexOf('{');
-                    const lastBrace = rawText.lastIndexOf('}');
-                    if (firstBrace !== -1 && lastBrace > firstBrace) {
-                        const coreJsonString = rawText.substring(firstBrace, lastBrace + 1);
-                        try {
-                            const parsedJson = JSON.parse(coreJsonString);
-                            finalValue = '{{' + JSON.stringify(parsedJson) + '}}';
-                        } catch (e) {
-                            console.warn('MLE: Content is not valid JSON. Saving raw text to avoid data loss.');
-                            finalValue = rawText;
+                    const rawText = textarea.value; // Keep user's formatting for now
+                    let coreJsonString = rawText.trim(); // Use trimmed version for checks
+
+                    // Attempt to compact and re-serialize valid JSON to ensure correctness
+                    try {
+                        let jsonToParse = coreJsonString;
+                        const isWrapped = coreJsonString.startsWith('{{') && coreJsonString.endsWith('}}');
+                        if (isWrapped) {
+                            jsonToParse = coreJsonString.substring(2, coreJsonString.length - 2);
                         }
-                    } else {
-                         console.warn('MLE: Could not find JSON braces { ... }. Saving raw text.');
-                        finalValue = rawText;
+                        const parsedJson = JSON.parse(jsonToParse);
+                        const stringifiedJson = JSON.stringify(parsedJson);
+
+                        finalValue = isWrapped ? `{{${stringifiedJson}}}` : stringifiedJson;
+
+                    } catch (e) {
+                        console.warn('MLE: Content is not valid JSON. Saving raw text to avoid data loss.');
+                        finalValue = rawText; // Save the user's original formatted text if parsing fails
                     }
                 }
                 // Programmatically set the input value and trigger an event to ensure the web app recognizes the change.
@@ -184,17 +213,19 @@
             const potentialJson = displayContent.slice(2, -2);
             try {
                 const parsedJson = JSON.parse(potentialJson);
-                textarea.value = `{{\n${JSON.stringify(parsedJson, null, 4)}\n}}`;
+                textarea.value = `{{\n${JSON.stringify(parsedJson, null, TAB_SPACES)}\n}}`;
                 if (!readOnly) isEditingJson = true;
             } catch (e) {
                 textarea.value = displayContent;
             }
         }
-        // Format standard JSON arrays for readability
-        else if (displayContent.trim().startsWith('[') && displayContent.trim().endsWith(']')) {
-             try {
+        // Format standard JSON objects {} or arrays [] for readability
+        else if ((displayContent.trim().startsWith('{') && displayContent.trim().endsWith('}')) ||
+                 (displayContent.trim().startsWith('[') && displayContent.trim().endsWith(']'))) {
+            try {
                 const parsedJson = JSON.parse(displayContent);
-                textarea.value = JSON.stringify(parsedJson, null, 4);
+                textarea.value = JSON.stringify(parsedJson, null, TAB_SPACES);
+                if (!readOnly) isEditingJson = true; // Mark as JSON for saving if it's an editable field
             } catch (e) {
                 // Not valid JSON, just show the raw content
                 textarea.value = displayContent;
@@ -333,7 +364,7 @@
     }
 
     // --- Main Execution ---
-    console.log('Starting Multiline Editor script (v2.1)...');
+    console.log('Starting Multiline Editor script (v2.3)...');
     injectStyles();
     createModal();
     // Use a single interval to scan for all relevant elements
